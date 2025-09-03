@@ -229,9 +229,10 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
       postProgress({ type: 'overall', processed, total: names.length });
     }
 
-    const zipped = zipSync(out, { level: 6 });
-    const result = new Blob([zipped], { type: 'application/zip' });
-    (postMessage as any)({ type: 'done', jobId, blob: result } satisfies WorkerOut);
+  const zipped = zipSync(out, { level: 6 });
+  // 確保傳入 ArrayBuffer，避免 TS2322 型別錯誤
+  const result = new Blob([zipped instanceof Uint8Array ? zipped.slice().buffer : zipped], { type: 'application/zip' });
+  (postMessage as any)({ type: 'done', jobId, blob: result } satisfies WorkerOut);
   } catch (err) {
     (postMessage as any)({ type: 'progress', payload: { type: 'error', name: '(worker)', reason: (err as Error).message } });
   }
