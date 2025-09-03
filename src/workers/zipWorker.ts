@@ -51,7 +51,8 @@ const isJPEGExt = (name: string) => /\.(jpe?g)$/i.test(name);
 const isJPEGMagic = (bytes: Uint8Array) => 
   bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
 
-const blobFromU8 = (u8: Uint8Array, type = 'application/octet-stream') => new Blob([u8], { type });
+const blobFromU8 = (u8: Uint8Array, type = 'application/octet-stream') =>
+  new Blob([new Uint8Array(Array.from(u8)).buffer], { type });
 
 async function decodeToBitmap(blob: Blob): Promise<ImageBitmap | HTMLImageElement> {
   if ('createImageBitmap' in self && typeof (self as any).createImageBitmap === 'function') {
@@ -229,10 +230,10 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
       postProgress({ type: 'overall', processed, total: names.length });
     }
 
-const zipped = zipSync(out, { level: 6 }) as Uint8Array;
-const result = new Blob([zipped], { type: 'application/zip' });
-(postMessage as any)({ type: 'done', jobId, blob: result } satisfies WorkerOut);
-
+  const zipped = zipSync(out, { level: 6 });
+  const ab = new Uint8Array(Array.from(zipped)).buffer;
+  const result = new Blob([ab], { type: 'application/zip' });
+  (postMessage as any)({ type: 'done', jobId, blob: result } satisfies WorkerOut);
   } catch (err) {
     (postMessage as any)({ type: 'progress', payload: { type: 'error', name: '(worker)', reason: (err as Error).message } });
   }
