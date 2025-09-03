@@ -202,7 +202,13 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
     const rawNames = Object.keys(entries);
     const isHiddenish = (n: string) => n.split('/').some(part => part.startsWith('.') || part.startsWith('._'));
     const candidates = rawNames.filter(n => (/(jpe?g|png)$/i).test(n) && !isHiddenish(n));
-    const names = candidates.slice(0, maxCount);
+    if (candidates.length > maxCount) {
+      postProgress({ type: 'error', name: '(worker)', reason: `檔案數量超過上限 (${maxCount})，請減少圖片數量再試。` });
+      return;
+    }
+    const names = candidates;
+    console.log('rawNames', rawNames.length, rawNames);
+    console.log('candidates', candidates.length, candidates);
 
     postProgress({ type: 'overall', processed: 0, total: names.length });
     const out: Record<string, Uint8Array> = {};
@@ -210,7 +216,6 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
 
     for (const rawName of names) {
       const name = sanitizeName(rawName);
-      if (processed >= maxCount) { postProgress({ type: 'skip', name, reason: 'exceed_max_count' }); continue; }
 
       const fileU8 = entries[rawName];
       const inFmt = detectImageType(name, fileU8);
@@ -251,6 +256,7 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
       }
 
       processed++;
+      console.log(names.length, ":names len");
       postProgress({ type: 'overall', processed, total: names.length });
     }
 
