@@ -230,8 +230,8 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
     }
 
   const zipped = zipSync(out, { level: 6 });
-  // 強制複製成新的 Uint8Array，再取 .buffer，確保型別正確
-  const ab = new Uint8Array(zipped).buffer;
+  // 徹底解決 TS2322 型別錯誤，將 zipped 轉成 ArrayBuffer
+  const ab = new Uint8Array(Array.from(zipped)).buffer;
   const result = new Blob([ab], { type: 'application/zip' });
   (postMessage as any)({ type: 'done', jobId, blob: result } satisfies WorkerOut);
   } catch (err) {
