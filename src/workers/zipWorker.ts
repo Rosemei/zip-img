@@ -182,8 +182,16 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
 
     const u8 = new Uint8Array(zipFile);
     const entries = unzipSync(u8, { filter: (file) => !file.name.endsWith('/') && !file.name.startsWith('__MACOSX/') });
-    const names = Object.keys(entries);
+    const rawNames = Object.keys(entries);
+    const isHiddenish = (n: string) =>
+      n.split('/').some(part => part.startsWith('.') || part.startsWith('._'));
+    const candidates = rawNames.filter(n =>
+      /\.(jpe?g)$/i.test(n) && !isHiddenish(n)
+    );
+    const names = candidates.slice(0, maxCount);
 
+    // Return the files total 
+    postProgress({ type: 'overall', processed: 0, total: names.length });
     const out: Record<string, Uint8Array> = {};
     let processed = 0;
 
