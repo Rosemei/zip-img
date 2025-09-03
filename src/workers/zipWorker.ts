@@ -1,12 +1,12 @@
 /// <reference lib="webworker" />
 /*
-  workers/zipWorker.ts  — JPEG + PNG 支援版（force transcode）
+  workers/zipWorker.ts  — JPEG + PNG 支援版（force transcode, streaming ZIP）
   Responsibilities:
   - Receive a ZIP (ArrayBuffer) + rules
   - Unzip in worker (fflate)
   - Validate file type (.jpg/.jpeg/.png + magic number)
   - Decode → rotate (EXIF for JPEG) → resize/reencode to meet (maxLongEdge, maxBytes)
-  - Repack to ZIP and post back as Blob
+  - Stream ZIP chunks back to main thread (no giant in-memory blob)
   - Report progress for each entry and overall
 
   Notes for PNG:
@@ -15,7 +15,7 @@
   - `rules.format` 仍存在，但對 PNG 會被忽略（固定輸出 JPEG）。
 */
 
-import { unzipSync, zipSync } from 'fflate';
+import { unzipSync, Zip, AsyncZipDeflate } from 'fflate';
 import * as exifr from 'exifr';
 
 export type Rules = {
@@ -40,11 +40,14 @@ export type ProgressMsg =
   | { type: 'kept' | 'processed'; name: string; reason?: string; size?: number; originalSize?: number; inFmt?: 'jpeg' | 'png'; outFmt?: 'jpeg' | 'png' }
   | { type: 'skip' | 'error'; name: string; reason?: string; size?: number };
 
+// 🔄 改為串流事件：zip-chunk（多次）+ done-stream（一次）
 export type WorkerOut =
   | { type: 'progress'; payload: ProgressMsg }
-  | { type: 'done'; jobId: string; blob: Blob };
+  | { type: 'zip-chunk'; chunk: Uint8Array }
+  | { type: 'done-stream'; jobId: string };
 
-const postProgress = (msg: ProgressMsg) => (postMessage as any)({ type: 'progress', payload: msg } satisfies WorkerOut);
+const postProgress = (msg: ProgressMsg) =>
+  (postMessage as any)({ type: 'progress', payload: msg } satisfies WorkerOut);
 
 const sanitizeName = (raw: string) => {
   const name = raw.replace(/\\/g, '/').split('/').pop() || 'image.jpg';
@@ -69,8 +72,9 @@ const detectImageType = (name: string, bytes: Uint8Array): 'jpeg' | 'png' | null
   return null;
 };
 
+// 避免多餘拷貝：直接用 u8（不要 Array.from(u8)）
 const blobFromU8 = (u8: Uint8Array, type = 'application/octet-stream') =>
-  new Blob([new Uint8Array(Array.from(u8)).buffer], { type });
+  new Blob([u8], { type });
 
 async function decodeToBitmap(blob: Blob): Promise<ImageBitmap | HTMLImageElement> {
   if ('createImageBitmap' in self && typeof (self as any).createImageBitmap === 'function') {
@@ -168,23 +172,6 @@ async function meetSizeLimitJPEG(
   return meetSizeLimitJPEG(source, orientation, next, rules);
 }
 
-async function meetSizeLimitPNG(
-  source: ImageBitmap | HTMLImageElement,
-  orientation: number | undefined,
-  dims: { width: number; height: number },
-  rules: Rules,
-): Promise<Blob> {
-  const maxBytes = rules.maxBytes || Infinity;
-  const blob = await drawAndEncode(source, orientation, dims, 'png');
-  if (blob.size <= maxBytes) return blob;
-  const ratio = rules.stepDownRatio ?? 0.9;
-  const next = { width: Math.max(1, Math.round(dims.width * ratio)), height: Math.max(1, Math.round(dims.height * ratio)) };
-  if (next.width === dims.width && next.height === dims.height) {
-    return blob;
-  }
-  return meetSizeLimitPNG(source, orientation, next, rules);
-}
-
 function needProcess(bytes: Uint8Array, dims: { width: number; height: number }, rules: Rules) {
   const tooLong = !!rules.maxLongEdge && Math.max(dims.width, dims.height) > (rules.maxLongEdge as number);
   const tooBig  = !!rules.maxBytes && bytes.length > (rules.maxBytes as number);
@@ -207,11 +194,20 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
       return;
     }
     const names = candidates;
-    console.log('rawNames', rawNames.length, rawNames);
-    console.log('candidates', candidates.length, candidates);
 
     postProgress({ type: 'overall', processed: 0, total: names.length });
-    const out: Record<string, Uint8Array> = {};
+
+    // 🔁 串流 ZIP：建立 zipper，ondata 就傳出 chunk（使用 transferable）
+    const zipper = new Zip((chunk: Uint8Array) => {
+      (postMessage as any)({ type: 'zip-chunk', chunk } satisfies WorkerOut, [chunk.buffer]);
+    });
+
+    const appendFileToZip = (name: string, data: Uint8Array) => {
+      const file = new AsyncZipDeflate(name, { level: 6 });
+      zipper.add(file);
+      file.push(data, true); // true = 此檔案最後一塊
+    };
+
     let processed = 0;
 
     for (const rawName of names) {
@@ -235,9 +231,11 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
       const originalSize = fileU8.length;
       const needs = needProcess(fileU8, dims0, rules);
 
+      // PNG 一律轉 JPEG；JPEG 則依偏好/auto
       const outFmt: 'jpeg' | 'png' = (inFmt === 'png')
-        ? 'jpeg' // 需求：所有 PNG 強制轉 JPEG 再縮檔
+        ? 'jpeg'
         : (formatPref === 'auto' ? inFmt : (formatPref as 'jpeg' | 'png'));
+
       const initialDims = targetSize(dims0, rules.maxLongEdge ?? dims0.width);
 
       try {
@@ -245,25 +243,28 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
         if (outFmt === 'jpeg') {
           finalBlob = await meetSizeLimitJPEG(bitmap, orientation, initialDims, rules);
         } else {
-          finalBlob = await meetSizeLimitPNG(bitmap, orientation, initialDims, rules);
+          // 基本不會用到（你的需求下 PNG→JPEG），保留以防格式設為 png
+          finalBlob = await drawAndEncode(bitmap, orientation, initialDims, 'png');
         }
         const arr = new Uint8Array(await finalBlob.arrayBuffer());
-        out[name] = arr;
+        const outName = outFmt === 'jpeg' ? name.replace(/\.png$/i, '.jpg') : name;
+        appendFileToZip(outName, arr);
+
         const didTranscode = outFmt !== inFmt || needs; // PNG->JPEG 也算轉檔
-        postProgress({ type: didTranscode ? 'processed' : 'kept', name, size: arr.length, originalSize, inFmt, outFmt });
+        postProgress({ type: didTranscode ? 'processed' : 'kept', name: outName, size: arr.length, originalSize, inFmt, outFmt });
       } catch {
         postProgress({ type: 'error', name, reason: 'process' });
+      } finally {
+        (bitmap as any).close?.();
       }
 
       processed++;
-      console.log(names.length, ":names len");
       postProgress({ type: 'overall', processed, total: names.length });
     }
 
-    const zipped = zipSync(out, { level: 6 });
-    const ab = new Uint8Array(Array.from(zipped)).buffer;
-    const result = new Blob([ab], { type: 'application/zip' });
-    (postMessage as any)({ type: 'done', jobId, blob: result } satisfies WorkerOut);
+    // ✅ 收尾：發送 central directory 的最後 chunk
+    zipper.end();
+    (postMessage as any)({ type: 'done-stream', jobId } satisfies WorkerOut);
   } catch (err) {
     (postMessage as any)({ type: 'progress', payload: { type: 'error', name: '(worker)', reason: (err as Error).message } });
   }
