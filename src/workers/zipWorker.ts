@@ -229,9 +229,8 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
       postProgress({ type: 'overall', processed, total: names.length });
     }
 
-const zipped = zipSync(out, { level: 6 });
-const ab = zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength);
-const result = new Blob([ab], { type: 'application/zip' });
+const zipped = zipSync(out, { level: 6 }) as Uint8Array;
+const result = new Blob([zipped], { type: 'application/zip' });
 (postMessage as any)({ type: 'done', jobId, blob: result } satisfies WorkerOut);
 
   } catch (err) {
