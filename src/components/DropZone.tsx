@@ -5,6 +5,7 @@ type Props = { onFile: (file: File) => void }
 
 export default function DropZone({ onFile }: Props) {
   const onDrop = useCallback((accepted: File[]) => {
+    console.log(accepted, ":onDrop[accepted]")
     if (accepted[0]) onFile(accepted[0])
   }, [onFile])
 
