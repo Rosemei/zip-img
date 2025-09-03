@@ -31,7 +31,8 @@ export type WorkerIn = {
 
 export type ProgressMsg =
   | { type: 'overall'; processed: number; total: number }
-  | { type: 'kept' | 'processed' | 'skip' | 'error'; name: string; reason?: string; size?: number };
+  | { type: 'kept' | 'processed'; name: string; reason?: string; size?: number; originalSize?: number }
+  | { type: 'skip' | 'error'; name: string; reason?: string; size?: number };
 
 export type WorkerOut =
   | { type: 'progress'; payload: ProgressMsg }
@@ -209,18 +210,20 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
       }
 
       const dims0 = getDims(bitmap);
+
+      const originalSize = fileU8.length;
       const needs = needProcess(fileU8, dims0, rules);
 
       if (!needs) {
         out[name] = fileU8;
-        postProgress({ type: 'kept', name, size: fileU8.length });
+        postProgress({ type: 'kept', name, size: fileU8.length, originalSize });
       } else {
         const initialDims = targetSize(dims0, rules.maxLongEdge ?? dims0.width);
         try {
           const finalBlob = await meetSizeLimit(bitmap, orientation, initialDims, rules);
           const arr = new Uint8Array(await finalBlob.arrayBuffer());
           out[name] = arr;
-          postProgress({ type: 'processed', name, size: arr.length });
+          postProgress({ type: 'processed', name, size: arr.length, originalSize });
         } catch (e) {
           postProgress({ type: 'error', name, reason: 'process' });
         }

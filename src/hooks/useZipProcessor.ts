@@ -18,6 +18,7 @@ export type ItemResult = {
   name: string;
   status: 'kept' | 'processed' | 'skip' | 'error';
   size?: number;
+  originalSize?: number;
   reason?: string;
 };
 
@@ -77,7 +78,7 @@ export function useZipProcessor() {
         } else {
           setList((prev) => [
             ...prev,
-            { name: p.name, status: p.type as ItemResult['status'], size: p.size, reason: p.reason },
+            { name: p.name, status: p.type as ItemResult['status'], size: p.size, originalSize: p.originalSize, reason: p.reason },
           ]);
         }
       } else if (msg.type === 'done') {

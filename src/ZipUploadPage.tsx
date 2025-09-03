@@ -38,7 +38,9 @@ export default function ZipUploadPage() {
         <ul style={{ maxHeight: 260, overflow: 'auto', border: '1px solid #eee', padding: 8, marginTop: 8 }}>
           {list.map((x, i) => (
             <li key={i}>
-              <code>{x.name}</code> — {x.status}{x.reason ? ` (${x.reason})` : ''}{typeof x.size === 'number' ? ` — ${Math.round(x.size/1024)}KB` : ''}
+              <code>{x.name}</code> — {x.status}{x.reason ? ` (${x.reason})` : ''}
+              {typeof x.size === 'number' ? ` — ${Math.round(x.size/1024)}KB` : ''}
+              {typeof x.originalSize === 'number' && x.status !== 'skip' && x.status !== 'error' ? ` (原始 ${Math.round(x.originalSize/1024)}KB)` : ''}
             </li>
           ))}
         </ul>
