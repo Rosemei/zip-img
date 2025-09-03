@@ -181,7 +181,7 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
     const maxCount = rules.maxCount ?? 200;
 
     const u8 = new Uint8Array(zipFile);
-    const entries = unzipSync(u8, { filter: (file) => !file.name.endsWith('/') });
+    const entries = unzipSync(u8, { filter: (file) => !file.name.endsWith('/') && !file.name.startsWith('__MACOSX/') });
     const names = Object.keys(entries);
 
     const out: Record<string, Uint8Array> = {};
