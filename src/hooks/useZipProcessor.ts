@@ -34,7 +34,7 @@ export function useZipProcessor() {
 
   const workerRef = useRef<Worker | null>(null);
   const objectUrlRef = useRef<string | null>(null);
-  const chunksRef = useRef<Uint8Array[]>([]); 
+  const chunksRef = useRef<ArrayBuffer[]>([]);
   const jobIdRef = useRef<string | null>(null);
   const startTsRef = useRef<number | null>(null);
 
@@ -68,23 +68,27 @@ export function useZipProcessor() {
 
       if (msg.type === 'zip-chunk') {
         if (msg.chunk && msg.chunk.byteLength) {
-          chunksRef.current.push(msg.chunk);
+          // 收集 ArrayBuffer，避免型別問題
+          const ab = msg.chunk.buffer.slice(msg.chunk.byteOffset, msg.chunk.byteOffset + msg.chunk.byteLength);
+          if (ab instanceof ArrayBuffer && ab.constructor.name === 'ArrayBuffer') {
+            chunksRef.current.push(ab);
+          }
         }
         return;
       }
 
       if (msg.type === 'done-stream') {
         console.log('done-stream')
-        const zipBlob = new Blob(chunksRef.current, { type: 'application/zip' });
-        chunksRef.current = []; // 釋放
-        setOutput(zipBlob);
-        setBusy(false);
-        setError(null);
-        const end = performance.now();
-        const start = startTsRef.current ?? end;
-        const elapsedMs = Math.max(0, Math.round(end - start));
-        setProgress((prev) => ({ ...prev, elapsedMs }));
-        return;
+  const zipBlob = new Blob(chunksRef.current, { type: 'application/zip' });
+  chunksRef.current = []; // 釋放
+  setOutput(zipBlob);
+  setBusy(false);
+  setError(null);
+  const end = performance.now();
+  const start = startTsRef.current ?? end;
+  const elapsedMs = Math.max(0, Math.round(end - start));
+  setProgress((prev) => ({ ...prev, elapsedMs }));
+  return;
       }
 
       if (msg.type === 'progress') {

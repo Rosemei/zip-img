@@ -74,7 +74,10 @@ const detectImageType = (name: string, bytes: Uint8Array): 'jpeg' | 'png' | null
 
 // 避免多餘拷貝：直接用 u8（不要 Array.from(u8)）
 const blobFromU8 = (u8: Uint8Array, type = 'application/octet-stream') =>
-  new Blob([u8], { type });
+  (() => {
+    const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+    return new Blob([ab instanceof ArrayBuffer ? ab : new ArrayBuffer(0)], { type });
+  })();
 
 async function decodeToBitmap(blob: Blob): Promise<ImageBitmap | HTMLImageElement> {
   if ('createImageBitmap' in self && typeof (self as any).createImageBitmap === 'function') {
@@ -222,8 +225,8 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
           return;
         }
         if (chunk && chunk.byteLength) {
-          // ⬇️ 關鍵：先複製，再移交副本的 buffer，避免 fflate 後續重用原 chunk
-          const copy = chunk.slice();
+          // 強制複製成標準 Uint8Array，避免型別問題
+          const copy = new Uint8Array(chunk);
           (postMessage as any)(
             { type: "zip-chunk", chunk: copy } as WorkerOut,
             [copy.buffer]
