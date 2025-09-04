@@ -55,7 +55,7 @@ const sanitizeName = (raw: string) => {
 };
 
 const isJPEGExt = (name: string) => /\.(jpe?g)$/i.test(name);
-const isPNGExt  = (name: string) => /\.(png)$/i.test(name);
+const isPNGExt = (name: string) => /\.(png)$/i.test(name);
 
 const isJPEGMagic = (bytes: Uint8Array) =>
   bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
@@ -174,7 +174,7 @@ async function meetSizeLimitJPEG(
 
 function needProcess(bytes: Uint8Array, dims: { width: number; height: number }, rules: Rules) {
   const tooLong = !!rules.maxLongEdge && Math.max(dims.width, dims.height) > (rules.maxLongEdge as number);
-  const tooBig  = !!rules.maxBytes && bytes.length > (rules.maxBytes as number);
+  const tooBig = !!rules.maxBytes && bytes.length > (rules.maxBytes as number);
   return tooLong || tooBig;
 }
 
@@ -182,25 +182,59 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
   try {
     const { jobId, zipFile, rules } = evt.data;
     const maxCount = rules.maxCount ?? 200;
-    const formatPref: 'jpeg' | 'png' | 'auto' = rules.format ?? 'jpeg';
+    const formatPref: "jpeg" | "png" | "auto" = rules.format ?? "jpeg";
 
     const u8 = new Uint8Array(zipFile);
-    const entries = unzipSync(u8, { filter: (file) => !file.name.endsWith('/') && !file.name.startsWith('__MACOSX/') });
+    const entries = unzipSync(u8, {
+      filter: (file) =>
+        !file.name.endsWith("/") && !file.name.startsWith("__MACOSX/"),
+    });
     const rawNames = Object.keys(entries);
-    const isHiddenish = (n: string) => n.split('/').some(part => part.startsWith('.') || part.startsWith('._'));
-    const candidates = rawNames.filter(n => (/(jpe?g|png)$/i).test(n) && !isHiddenish(n));
+    const isHiddenish = (n: string) =>
+      n
+        .split("/")
+        .some((part) => part.startsWith(".") || part.startsWith("._"));
+    const candidates = rawNames.filter(
+      (n) => /(jpe?g|png)$/i.test(n) && !isHiddenish(n)
+    );
     if (candidates.length > maxCount) {
-      postProgress({ type: 'error', name: '(worker)', reason: `檔案數量超過上限 (${maxCount})，請減少圖片數量再試。` });
+      postProgress({
+        type: "error",
+        name: "(worker)",
+        reason: `檔案數量超過上限 (${maxCount})，請減少圖片數量再試。`,
+      });
       return;
     }
     const names = candidates;
 
-    postProgress({ type: 'overall', processed: 0, total: names.length });
+    postProgress({ type: "overall", processed: 0, total: names.length });
 
-    // 🔁 串流 ZIP：建立 zipper，ondata 就傳出 chunk（使用 transferable）
-    const zipper = new Zip((chunk: Uint8Array) => {
-      (postMessage as any)({ type: 'zip-chunk', chunk } satisfies WorkerOut, [chunk.buffer]);
-    });
+    // 建立串流 ZIP：正確簽名 (err, chunk, final)
+    let sentDone = false;
+    const zipper = new Zip(
+      (err: Error | null, chunk: Uint8Array | undefined, final: boolean) => {
+        if (err) {
+          postProgress({
+            type: "error",
+            name: "(zipper)",
+            reason: err.message,
+          });
+          return;
+        }
+        if (chunk && chunk.byteLength) {
+          // ⬇️ 關鍵：先複製，再移交副本的 buffer，避免 fflate 後續重用原 chunk
+          const copy = chunk.slice();
+          (postMessage as any)(
+            { type: "zip-chunk", chunk: copy } as WorkerOut,
+            [copy.buffer]
+          );
+        }
+        if (final && !sentDone) {
+          sentDone = true;
+          (postMessage as any)({ type: "done-stream", jobId } as WorkerOut);
+        }
+      }
+    );
 
     const appendFileToZip = (name: string, data: Uint8Array) => {
       const file = new AsyncZipDeflate(name, { level: 6 });
@@ -215,56 +249,89 @@ onmessage = async (evt: MessageEvent<WorkerIn>) => {
 
       const fileU8 = entries[rawName];
       const inFmt = detectImageType(name, fileU8);
-      if (!inFmt) { postProgress({ type: 'skip', name, reason: 'unsupported' }); continue; }
+      if (!inFmt) {
+        postProgress({ type: "skip", name, reason: "unsupported" });
+        continue;
+      }
 
-      const blob = blobFromU8(fileU8, inFmt === 'jpeg' ? 'image/jpeg' : 'image/png');
+      const blob = blobFromU8(
+        fileU8,
+        inFmt === "jpeg" ? "image/jpeg" : "image/png"
+      );
 
       let orientation: number | undefined;
-      if (inFmt === 'jpeg') {
-        try { orientation = (await (exifr as any).orientation(blob)) as number | undefined; } catch {}
+      if (inFmt === "jpeg") {
+        try {
+          orientation = await(exifr as any).orientation(blob) as
+            | number
+            | undefined;
+        } catch {}
       }
 
       let bitmap: ImageBitmap | HTMLImageElement;
-      try { bitmap = await decodeToBitmap(blob); } catch { postProgress({ type: 'error', name, reason: 'decode' }); continue; }
+      try {
+        bitmap = await decodeToBitmap(blob);
+      } catch {
+        postProgress({ type: "error", name, reason: "decode" });
+        continue;
+      }
 
       const dims0 = getDims(bitmap);
       const originalSize = fileU8.length;
       const needs = needProcess(fileU8, dims0, rules);
 
       // PNG 一律轉 JPEG；JPEG 則依偏好/auto
-      const outFmt: 'jpeg' | 'png' = (inFmt === 'png')
-        ? 'jpeg'
-        : (formatPref === 'auto' ? inFmt : (formatPref as 'jpeg' | 'png'));
+      const outFmt: "jpeg" | "png" =
+        inFmt === "png"
+          ? "jpeg"
+          : formatPref === "auto"
+          ? inFmt
+          : (formatPref as "jpeg" | "png");
 
       const initialDims = targetSize(dims0, rules.maxLongEdge ?? dims0.width);
 
       try {
         let finalBlob: Blob;
-        if (outFmt === 'jpeg') {
-          finalBlob = await meetSizeLimitJPEG(bitmap, orientation, initialDims, rules);
+        if (outFmt === "jpeg") {
+          finalBlob = await meetSizeLimitJPEG(
+            bitmap,
+            orientation,
+            initialDims,
+            rules
+          );
         } else {
           // 基本不會用到（你的需求下 PNG→JPEG），保留以防格式設為 png
-          finalBlob = await drawAndEncode(bitmap, orientation, initialDims, 'png');
+          finalBlob = await drawAndEncode(
+            bitmap,
+            orientation,
+            initialDims,
+            "png"
+          );
         }
         const arr = new Uint8Array(await finalBlob.arrayBuffer());
-        const outName = outFmt === 'jpeg' ? name.replace(/\.png$/i, '.jpg') : name;
+        const outName =
+          outFmt === "jpeg" ? name.replace(/\.png$/i, ".jpg") : name;
         appendFileToZip(outName, arr);
 
         const didTranscode = outFmt !== inFmt || needs; // PNG->JPEG 也算轉檔
-        postProgress({ type: didTranscode ? 'processed' : 'kept', name: outName, size: arr.length, originalSize, inFmt, outFmt });
+        postProgress({
+          type: didTranscode ? "processed" : "kept",
+          name: outName,
+          size: finalBlob.size,
+          originalSize,
+          inFmt,
+          outFmt,
+        });
       } catch {
-        postProgress({ type: 'error', name, reason: 'process' });
+        postProgress({ type: "error", name, reason: "process" });
       } finally {
         (bitmap as any).close?.();
       }
 
       processed++;
-      postProgress({ type: 'overall', processed, total: names.length });
+      postProgress({ type: "overall", processed, total: names.length });
     }
-
-    // ✅ 收尾：發送 central directory 的最後 chunk
     zipper.end();
-    (postMessage as any)({ type: 'done-stream', jobId } satisfies WorkerOut);
   } catch (err) {
     (postMessage as any)({ type: 'progress', payload: { type: 'error', name: '(worker)', reason: (err as Error).message } });
   }
