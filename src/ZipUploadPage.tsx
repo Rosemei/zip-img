@@ -3,7 +3,7 @@ import DropZone from './components/DropZone'
 import { useZipProcessor } from './hooks/useZipProcessor'
 
 export default function ZipUploadPage() {
-  const { busy, list, outputUrl, progress, processZip, error, reset } = useZipProcessor()
+  const { busy, list, outputUrl, progress, processZip, error, reset, inputName } = useZipProcessor()
   const [rules, setRules] = useState({ maxCount: 200, maxLongEdge: 1600, maxBytes: 500 * 1024, quality: 0.82, minQuality: 0.5, stepDownRatio: 0.9, keepEXIF: false })
 
   const reducedTotalKB = useMemo(() =>
@@ -34,6 +34,8 @@ export default function ZipUploadPage() {
 
       <div style={{ marginTop: 16 }}>
         <strong>進度：</strong> {progress.processed}/{progress.total} {busy && '（處理中…）'}
+        {typeof (progress as any).elapsedMs === 'number' &&
+  <> — 耗時 {(progress as any).elapsedMs / 1000}s</>}
         {error && <div style={{ color: 'crimson' }}>錯誤：{error} <button onClick={reset}>重置</button></div>}
         <ul style={{ maxHeight: 260, overflow: 'auto', border: '1px solid #eee', padding: 8, marginTop: 8 }}>
           {list.map((x, i) => (
@@ -48,7 +50,7 @@ export default function ZipUploadPage() {
 
       <div style={{ marginTop: 12, display: 'flex', gap: 12 }}>
         {outputUrl && (
-          <a download={`processed_${Date.now()}.zip`} href={outputUrl}>下載處理後 ZIP</a>
+          <a download={`processed_${inputName}.zip`} href={outputUrl}>下載處理後 ZIP</a>
         )}
       </div>
     </div>
